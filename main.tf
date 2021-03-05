@@ -1,6 +1,136 @@
 locals {
   is_t_instance_type = replace(var.instance_type, "/^t(2|3|3a){1}\\..*$/", "1") == "1" ? true : false
 }
+resource "aws_vpc" "_" {
+  cidr_block = var.vpc_cidr
+
+  enable_dns_support   = var.enable_dns_support
+  enable_dns_hostnames = var.enable_dns_hostnames
+}
+
+resource "aws_internet_gateway" "_" {
+  vpc_id = aws_vpc._.id
+}
+
+resource "aws_route_table" "_" {
+  vpc_id = aws_vpc._.id
+
+  dynamic "route" {
+    for_each = var.route
+
+    content {
+      cidr_block     = route.value.cidr_block
+      gateway_id     = route.value.gateway_id
+      instance_id    = route.value.instance_id
+      nat_gateway_id = route.value.nat_gateway_id
+    }
+  }
+}
+
+resource "aws_route_table_association" "_" {
+  count          = length(var.subnet_ids)
+
+  subnet_id      = element(var.subnet_ids, count.index)
+  route_table_id = aws_route_table._.id
+}
+module "vpc" {
+  source = "../../modules/vpc"
+
+  resource_tag_name = var.resource_tag_name
+  namespace         = var.namespace
+  region            = var.region
+
+  vpc_cidr = "10.0.0.0/16"
+
+  route = [
+    {
+      cidr_block     = "0.0.0.0/0"
+      gateway_id     = module.vpc.gateway_id
+      instance_id    = null
+      nat_gateway_id = null
+    }
+  ]
+
+  subnet_ids = module.subnet_ec2.ids
+}
+resource "aws_security_group" "ec2" {
+  name = "${local.resource_name_prefix}-ec2-sg"
+
+  description = "EC2 security group (terraform-managed)"
+  vpc_id      = module.vpc.id
+
+  ingress {
+    from_port   = var.rds_port
+    to_port     = var.rds_port
+    protocol    = "tcp"
+    description = "MySQL"
+    cidr_blocks = local.rds_cidr_blocks
+  }
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    description = "HTTP"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    description = "HTTPS"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow all outbound traffic.
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+locals {
+  resource_name_prefix = "${var.namespace}-${var.resource_tag_name}"
+}
+
+resource "aws_db_subnet_group" "_" {
+  name       = "${local.resource_name_prefix}-${var.identifier}-subnet-group"
+  subnet_ids = var.subnet_ids
+}
+
+resource "aws_db_instance" "_" {
+  identifier = "${local.resource_name_prefix}-${var.identifier}"
+
+  allocated_storage       = var.allocated_storage
+  backup_retention_period = var.backup_retention_period
+  backup_window           = var.backup_window
+  maintenance_window      = var.maintenance_window
+  db_subnet_group_name    = aws_db_subnet_group._.id
+  engine                  = var.engine
+  engine_version          = var.engine_version
+  instance_class          = var.instance_class
+  multi_az                = var.multi_az
+  name                    = var.name
+  username                = var.username
+  password                = var.password
+  port                    = var.port
+  publicly_accessible     = var.publicly_accessible
+  storage_encrypted       = var.storage_encrypted
+  storage_type            = var.storage_type
+
+  vpc_security_group_ids = ["${aws_security_group._.id}"]
+
+  allow_major_version_upgrade = var.allow_major_version_upgrade
+  auto_minor_version_upgrade  = var.auto_minor_version_upgrade
+
+  final_snapshot_identifier = var.final_snapshot_identifier
+  snapshot_identifier       = var.snapshot_identifier
+  skip_final_snapshot       = var.skip_final_snapshot
+
+  performance_insights_enabled = var.performance_insights_enabled
+}
 
 resource "aws_instance" "this" {
   count = var.instance_count
